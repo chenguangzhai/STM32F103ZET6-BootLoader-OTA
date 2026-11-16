@@ -1,0 +1,33 @@
+# ---- EIDE / 构建产物（可再生产，不入库） ----
+build/
+**/build/
+*.o
+*.d
+*.su
+*.elf
+*.map
+*.map.old
+*.lnp
+*.hex
+*.bin
+*.crf
+*.axf
+*.lst
+
+# ---- 编辑器 / 工具 ----
+.vscode/
+.idea/
+*.uvguix.*
+*.uvoptx
+*.scvd
+.workbuddy/
+
+# ---- 系统垃圾 ----
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# ---- 日志 / 临时 ----
+*.log
+*.tmp
+*.bak
