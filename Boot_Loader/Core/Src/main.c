@@ -27,6 +27,7 @@
 #include "board.h"
 #include "uart_app.h"
 #include "boot_loader.h"
+#include "flash_app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,6 +37,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+/* 1 = 上电时做一次「擦一页 + 写 8 个字节 + 打印读回结果」，用完改成 0。
+ * 注意：每次上电都会重新擦写这一页，改成 0 以后就不会再动 Flash 了。 */
+#define FLASH_DEMO          1
 
 /* USER CODE END PD */
 
@@ -95,6 +100,24 @@ int main(void)
   /* USER CODE BEGIN 2 */
   Uart_Init();
   Led_Fan(1);
+
+#if (FLASH_DEMO != 0)
+	{
+		static const uint8_t demo[8] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+		uint8_t i;
+
+		Flash_ErasePage(APP_ADDR);					/* 1. 擦掉 App 区第一页 */
+		Flash_Write(APP_ADDR, demo, 8U);			/* 2. 写 8 个字节进去    */
+
+		Uart_Printf(UART_LOG, "[flash] write ok\r\n[flash] read: ");
+		for (i = 0U; i < 8U; i++)					/* 3. 直接当数组读回来   */
+		{
+			Uart_Printf(UART_LOG, "%02X ", *(volatile uint8_t *)(APP_ADDR + i));
+		}
+		Uart_Printf(UART_LOG, "\r\n");
+	}
+#endif
+
 	static uint8_t rx_test[512];		/* 放静态区：512 字节压栈太靠近 1KB 栈底 */
 	uint16_t len = 0;
 	uint32_t sum = 0;					/* 11156 撑得住，但 1MB 固件会让 uint16_t 回绕 */
