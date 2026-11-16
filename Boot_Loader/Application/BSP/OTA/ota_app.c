@@ -19,6 +19,7 @@ static uint32_t s_addr;			/* 当前这一页要写到哪个页首地址 */
 static uint32_t s_fill;			/* s_page 里已经攒了多少字节 */
 static uint32_t s_total;		/* 已经真正落进 Flash 的字节数 */
 static uint8_t  s_inited;		/* 没调过 Ota_Init 就不许写 */
+static int8_t   s_err;			/* 一旦某页写失败就锁死，避免反复擦同一页把寿命耗光 */
 
 
 /**
@@ -50,6 +51,7 @@ void Ota_Init(uint32_t start_addr)
 	s_fill   = 0U;
 	s_total  = 0U;
 	s_inited = 1U;
+	s_err    = OTA_OK;
 }
 
 
@@ -68,6 +70,10 @@ int8_t Ota_Feed(const uint8_t *buf, uint32_t len)
 	{
 		return OTA_ERR_ARG;
 	}
+	if(s_err != OTA_OK)			/* 之前已经写坏过，别再碰 Flash */
+	{
+		return s_err;
+	}
 
 	while(i < len)
 	{
@@ -80,11 +86,17 @@ int8_t Ota_Feed(const uint8_t *buf, uint32_t len)
 
 		if(s_fill >= OTA_PAGE_BYTES)		/* 满一页，落盘 */
 		{
-			if(Ota_PushPage(s_addr, s_page, OTA_PAGE_BYTES) != OTA_OK)
+			int8_t r = Ota_PushPage(s_addr, s_page, OTA_PAGE_BYTES);
+
+			if(r != OTA_OK)
 			{
-				/* 不清 s_fill：把攒着的数据留着，方便调试时看现场 */
-				OTA_LOG("[ota] FAIL at 0x%08lX\r\n", (unsigned long)s_addr);
-				return OTA_ERR_WRITE;
+				/* 不清 s_fill：把攒着的数据留着，方便调试时看现场。
+				   同时把错误锁死 —— 否则下一包数据又会来擦这一页，
+				   失败一次擦一次，10k 次寿命很快就耗光了。 */
+				s_err = r;
+				OTA_LOG("[ota] FAIL at 0x%08lX, code %d\r\n",
+						(unsigned long)s_addr, (int)r);
+				return r;
 			}
 
 			s_total += OTA_PAGE_BYTES;
@@ -109,20 +121,28 @@ int8_t Ota_Feed(const uint8_t *buf, uint32_t len)
   */
 int8_t Ota_Flush(void)
 {
+	int8_t r;
+
 	if(s_inited == 0U)
 	{
 		return OTA_ERR_ARG;
+	}
+	if(s_err != OTA_OK)			/* 已经写坏过，别再碰 Flash */
+	{
+		return s_err;
 	}
 	if(s_fill == 0U)			/* 没尾巴，什么都不用做 */
 	{
 		return OTA_OK;
 	}
 
-	if(Ota_PushPage(s_addr, s_page, s_fill) != OTA_OK)
+	r = Ota_PushPage(s_addr, s_page, s_fill);
+	if(r != OTA_OK)
 	{
-		OTA_LOG("[ota] tail FAIL at 0x%08lX %luB\r\n",
-				(unsigned long)s_addr, (unsigned long)s_fill);
-		return OTA_ERR_WRITE;
+		s_err = r;
+		OTA_LOG("[ota] tail FAIL at 0x%08lX %luB, code %d\r\n",
+				(unsigned long)s_addr, (unsigned long)s_fill, (int)r);
+		return r;
 	}
 
 	s_total += s_fill;
