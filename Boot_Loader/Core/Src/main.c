@@ -28,7 +28,7 @@
 #include "board.h"
 #include "uart_app.h"
 #include "boot_loader.h"
-#include "flash_app.h"
+#include "ota_app.h"		/* 落盘逻辑都在这里，main 只负责把数据喂进去 */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,8 +40,8 @@
 /* USER CODE BEGIN PD */
 
 /* 串口超过这么多毫秒没有新数据，就把还不足一页的尾巴也写进 Flash。
- * 否则最后一页（比如 11156 字节里的最后 916 字节）会永远留在内存里写不下去。 */
-#define FLASH_IDLE_FLUSH_MS 2000U
+ * 否则最后一页（比如 11168 字节里的最后 928 字节）会永远留在内存里写不下去。 */
+#define OTA_IDLE_FLUSH_MS   2000U
 
 /* USER CODE END PD */
 
@@ -53,13 +53,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-/* 从串口取数据的临时区。放静态区：512 字节压栈太靠近 1KB 栈底 */
+/* 从串口取数据的临时区。放静态区：512 字节压栈太靠近 1KB 栈底。
+   攒页缓冲已经搬进 ota_app.c，main 里不再需要 s_page。 */
 static uint8_t s_rx[512];
-
-/* 攒页缓冲：收够 2KB 才擦一次、写一次。
-   为什么不收一包写一包：擦一页要 20~40ms，写一页才 1~2ms。
-   512 字节写一次的话，同一页要被擦 4 次，慢 4 倍、寿命也砍到 1/4。 */
-static uint8_t s_page[FLASH_PAGE_BYTES];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -109,13 +105,12 @@ int main(void)
   Led_Fan(1);
 
 	uint16_t len;						/* 这次从串口取到多少字节 */
-	uint32_t wr_addr = APP_ADDR;		/* 下一个要写的页首地址 */
-	uint32_t fill    = 0U;				/* s_page 里已经攒了多少字节 */
-	uint32_t total   = 0U;				/* 累计收到的字节数 */
 	uint32_t last_rx = Board_Millis();	/* 最后一次收到数据的时刻 */
 
+	Ota_Init(APP_ADDR);					/* 写入起点：App 区第 8 页开头，同时清空内部状态 */
+
 	Uart_Printf(UART_LOG, "\r\n[ota] ready, app=0x%08lX, page=%luB\r\n",
-				(unsigned long)APP_ADDR, (unsigned long)FLASH_PAGE_BYTES);
+				(unsigned long)APP_ADDR, (unsigned long)OTA_PAGE_BYTES);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -125,50 +120,25 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	len = Uart_Read(UART_LOG, s_rx, sizeof(s_rx));
+	len = Uart_Read(UART_LOG, s_rx, sizeof(s_rx));	/* 取到 0 表示这段时间没有新数据 */
 
 	if(len > 0U)
 	{
-		uint16_t i = 0U;
+		last_rx = Board_Millis();					/* 每收到一次就刷新"最后收到"的时刻 */
 
-		total  += len;
-		last_rx = Board_Millis();
-
-		/* 把这次收到的字节塞进页缓冲，攒满 2KB 就落盘一次 */
-		while(i < len)
+		/* 攒页 + 落盘都藏在这一个调用里：攒满 2KB 自动擦一页、写一页，
+		   连进度日志 [ota] page ... 都是它打的，main 不用再管 2KB 边界。 */
+		if(Ota_Feed(s_rx, len) != OTA_OK)
 		{
-			uint32_t space = FLASH_PAGE_BYTES - fill;									/* 这一页还剩多少空位 */
-			uint32_t n     = ((uint32_t)(len - i) < space) ? (uint32_t)(len - i) : space;	/* 这次能塞多少 */
-
-			memcpy(&s_page[fill], &s_rx[i], n);
-			fill += n;
-			i    += (uint16_t)n;
-
-			if(fill == FLASH_PAGE_BYTES)		/* 攒满一页才动手 */
-			{
-				Flash_ErasePage(wr_addr);			/* 1. 先擦这一页 */
-				Flash_Write(wr_addr, s_page, fill);	/* 2. 再整页写进去 */
-
-				Uart_Printf(UART_LOG, "[ota] page 0x%08lX ok, sum: %lu\r\n",
-							(unsigned long)wr_addr, (unsigned long)total);
-
-				wr_addr += FLASH_PAGE_BYTES;		/* 3. 挪到下一页 */
-				fill = 0U;
-			}
+			Uart_Printf(UART_LOG, "[ota] write failed at 0x%08lX, sum: %lu\r\n",
+						(unsigned long)Ota_Addr(), (unsigned long)Ota_Total());
 		}
 	}
-	else if((fill > 0U) && (Timer_Timeout(&last_rx, FLASH_IDLE_FLUSH_MS) != 0U))
+	else if((Ota_Fill() > 0U) && (Timer_Timeout(&last_rx, OTA_IDLE_FLUSH_MS) != 0U))
 	{
-		/* 2 秒没有新数据：说明发完了，把不足一页的尾巴也写进去。
-		   这一页刚擦过，所以只写 fill 个字节就够，后面的自动还是 0xFF。 */
-		Flash_ErasePage(wr_addr);
-		Flash_Write(wr_addr, s_page, fill);
-
-		Uart_Printf(UART_LOG, "[ota] tail 0x%08lX %luB ok, sum: %lu\r\n",
-					(unsigned long)wr_addr, (unsigned long)fill, (unsigned long)total);
-
-		wr_addr += FLASH_PAGE_BYTES;
-		fill = 0U;
+		/* 2 秒没有新数据：说明发完了，把不足一页的尾巴也写出去。
+		   没有这一句，最后一页会永远留在 RAM 里，现象是"固件总是少最后一段"。 */
+		Ota_Flush();
 	}
   }
   /* USER CODE END 3 */
