@@ -24,6 +24,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <string.h>
 #include "board.h"
 #include "uart_app.h"
 #include "boot_loader.h"
@@ -38,9 +39,9 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-/* 1 = 上电时做一次「擦一页 + 写 8 个字节 + 打印读回结果」，用完改成 0。
- * 注意：每次上电都会重新擦写这一页，改成 0 以后就不会再动 Flash 了。 */
-#define FLASH_DEMO          1
+/* 串口超过这么多毫秒没有新数据，就把还不足一页的尾巴也写进 Flash。
+ * 否则最后一页（比如 11156 字节里的最后 916 字节）会永远留在内存里写不下去。 */
+#define FLASH_IDLE_FLUSH_MS 2000U
 
 /* USER CODE END PD */
 
@@ -52,7 +53,13 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+/* 从串口取数据的临时区。放静态区：512 字节压栈太靠近 1KB 栈底 */
+static uint8_t s_rx[512];
 
+/* 攒页缓冲：收够 2KB 才擦一次、写一次。
+   为什么不收一包写一包：擦一页要 20~40ms，写一页才 1~2ms。
+   512 字节写一次的话，同一页要被擦 4 次，慢 4 倍、寿命也砍到 1/4。 */
+static uint8_t s_page[FLASH_PAGE_BYTES];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -101,26 +108,14 @@ int main(void)
   Uart_Init();
   Led_Fan(1);
 
-#if (FLASH_DEMO != 0)
-	{
-		static const uint8_t demo[8] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
-		uint8_t i;
+	uint16_t len;						/* 这次从串口取到多少字节 */
+	uint32_t wr_addr = APP_ADDR;		/* 下一个要写的页首地址 */
+	uint32_t fill    = 0U;				/* s_page 里已经攒了多少字节 */
+	uint32_t total   = 0U;				/* 累计收到的字节数 */
+	uint32_t last_rx = Board_Millis();	/* 最后一次收到数据的时刻 */
 
-		Flash_ErasePage(APP_ADDR);					/* 1. 擦掉 App 区第一页 */
-		Flash_Write(APP_ADDR, demo, 8U);			/* 2. 写 8 个字节进去    */
-
-		Uart_Printf(UART_LOG, "[flash] write ok\r\n[flash] read: ");
-		for (i = 0U; i < 8U; i++)					/* 3. 直接当数组读回来   */
-		{
-			Uart_Printf(UART_LOG, "%02X ", *(volatile uint8_t *)(APP_ADDR + i));
-		}
-		Uart_Printf(UART_LOG, "\r\n");
-	}
-#endif
-
-	static uint8_t rx_test[512];		/* 放静态区：512 字节压栈太靠近 1KB 栈底 */
-	uint16_t len = 0;
-	uint32_t sum = 0;					/* 11156 撑得住，但 1MB 固件会让 uint16_t 回绕 */
+	Uart_Printf(UART_LOG, "\r\n[ota] ready, app=0x%08lX, page=%luB\r\n",
+				(unsigned long)APP_ADDR, (unsigned long)FLASH_PAGE_BYTES);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -130,16 +125,54 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	len = Uart_Read(UART_LOG, rx_test, sizeof(rx_test));
-	sum += len;
-	if(len > 0)
+	len = Uart_Read(UART_LOG, s_rx, sizeof(s_rx));
+
+	if(len > 0U)
 	{
-		Uart_Printf(UART_LOG, "receive: %d  sum: %lu\r\n", len, sum);
+		uint16_t i = 0U;
+
+		total  += len;
+		last_rx = Board_Millis();
+
+		/* 把这次收到的字节塞进页缓冲，攒满 2KB 就落盘一次 */
+		while(i < len)
+		{
+			uint32_t space = FLASH_PAGE_BYTES - fill;									/* 这一页还剩多少空位 */
+			uint32_t n     = ((uint32_t)(len - i) < space) ? (uint32_t)(len - i) : space;	/* 这次能塞多少 */
+
+			memcpy(&s_page[fill], &s_rx[i], n);
+			fill += n;
+			i    += (uint16_t)n;
+
+			if(fill == FLASH_PAGE_BYTES)		/* 攒满一页才动手 */
+			{
+				Flash_ErasePage(wr_addr);			/* 1. 先擦这一页 */
+				Flash_Write(wr_addr, s_page, fill);	/* 2. 再整页写进去 */
+
+				Uart_Printf(UART_LOG, "[ota] page 0x%08lX ok, sum: %lu\r\n",
+							(unsigned long)wr_addr, (unsigned long)total);
+
+				wr_addr += FLASH_PAGE_BYTES;		/* 3. 挪到下一页 */
+				fill = 0U;
+			}
+		}
+	}
+	else if((fill > 0U) && (Timer_Timeout(&last_rx, FLASH_IDLE_FLUSH_MS) != 0U))
+	{
+		/* 2 秒没有新数据：说明发完了，把不足一页的尾巴也写进去。
+		   这一页刚擦过，所以只写 fill 个字节就够，后面的自动还是 0xFF。 */
+		Flash_ErasePage(wr_addr);
+		Flash_Write(wr_addr, s_page, fill);
+
+		Uart_Printf(UART_LOG, "[ota] tail 0x%08lX %luB ok, sum: %lu\r\n",
+					(unsigned long)wr_addr, (unsigned long)fill, (unsigned long)total);
+
+		wr_addr += FLASH_PAGE_BYTES;
+		fill = 0U;
 	}
   }
   /* USER CODE END 3 */
 }
-
 /**
   * @brief System Clock Configuration
   * @retval None
