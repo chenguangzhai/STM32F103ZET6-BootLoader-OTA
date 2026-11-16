@@ -43,6 +43,14 @@
  * 否则最后一页（比如 11168 字节里的最后 928 字节）会永远留在内存里写不下去。 */
 #define OTA_IDLE_FLUSH_MS   2000U
 
+/* 上电后留给上位机的升级窗口（毫秒）。
+ * 这段时间内串口收到数据 → 留在 bootloader 升级；一直没有数据 → 跳到 App。
+ * 为什么必须留：无条件跳的话，App 一旦写坏或跑飞，bootloader 就再也没机会
+ * 被叫醒，只能拿 ST-Link 救。
+ * 调大 → 开机慢但从容；调小 → 开机快但按完复位要手快。
+ * 3000 是折中：串口助手里点一次"发送"通常 1~2 秒能完成。 */
+#define OTA_WAIT_MS         3000U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -102,15 +110,47 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   Uart_Init();
-  Led_Fan(1);
+  // Led_Fan(1);
 
 	uint16_t len;						/* 这次从串口取到多少字节 */
-	uint32_t last_rx = Board_Millis();	/* 最后一次收到数据的时刻 */
+	uint32_t last_rx  = Board_Millis();	/* 最后一次收到数据的时刻 */
+	uint32_t t_boot   = Board_Millis();	/* 上电时刻，用来算等待窗口 */
+	uint8_t  ota_mode = 0U;				/* 1 = 已经决定留在 bootloader 收固件 */
 
 	Ota_Init(APP_ADDR);					/* 写入起点：App 区第 8 页开头，同时清空内部状态 */
 
 	Uart_Printf(UART_LOG, "\r\n[ota] ready, app=0x%08lX, page=%luB\r\n",
 				(unsigned long)APP_ADDR, (unsigned long)OTA_PAGE_BYTES);
+
+	/* ---------- 上电窗口 ----------
+	   App 有效时等 OTA_WAIT_MS 毫秒：这期间上位机发数据就留在 bootloader
+	   升级，一直没数据就跳过去跑 App。
+	   没有 App（空片或刚擦过）就不用等 —— 反正没得跳，直接进下面的循环。 */
+	if(Boot_Loader_AppValid(APP_ADDR) != 0U)
+	{
+		while((ota_mode == 0U) && (Timer_Timeout(&t_boot, OTA_WAIT_MS) == 0U))
+		{
+			len = Uart_Read(UART_LOG, s_rx, sizeof(s_rx));
+			if(len > 0U)
+			{
+				last_rx  = Board_Millis();
+				ota_mode = 1U;
+				Uart_Printf(UART_LOG, "[boot] enter OTA\r\n");
+				Ota_Feed(s_rx, len);		/* 这一包别丢，先喂进去 */
+			}
+		}
+
+		if(ota_mode == 0U)					/* 窗口内没人理，跳 App */
+		{
+			Uart_Printf(UART_LOG, "[boot] jump to app 0x%08lX\r\n", (unsigned long)APP_ADDR);
+			Boot_Loader_JumpToApp(APP_ADDR);
+			Uart_Printf(UART_LOG, "[boot] jump aborted\r\n");
+		}
+	}
+	else
+	{
+		Uart_Printf(UART_LOG, "[boot] no valid app, waiting for firmware\r\n");
+	}
   /* USER CODE END 2 */
 
   /* Infinite loop */
