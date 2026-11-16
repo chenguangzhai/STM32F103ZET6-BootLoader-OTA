@@ -36,6 +36,11 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+/* App 镜像在 Flash 里的起始地址，必须和 STM32F103XX_FLASH.ld 的 FLASH ORIGIN
+   一字不差。BootLoader 跳过来时也是往这个地址取初始 SP 和复位向量。
+   F103xE 页大小 2KB，所以这个值必须 2KB 对齐（0x08004000 = 第 8 页）。 */
+#define APP_ADDR    0x08004000U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -68,6 +73,13 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+
+  /* 中断向量表重定位，必须放在 HAL_Init() 之前。
+     HAL_Init() 里会打开 SysTick，而 SysTick_Handler 的入口是从 VTOR
+     指向的那张表里取的：VTOR 还指着 0x08000000 时，SysTick 会跑到
+     BootLoader 的向量表里去 —— 能跑，但跑的是别人的中断。
+     后面开 USART1 / DMA 中断同理。 */
+  SCB->VTOR = APP_ADDR;
 
   /* USER CODE END 1 */
 
