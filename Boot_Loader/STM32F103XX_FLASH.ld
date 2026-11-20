@@ -53,10 +53,14 @@
 ENTRY(Reset_Handler)
 
 /* Specify the memory areas */
+/* BootLoader 分区 = 32KB（0x08000000 ~ 0x08007FFF，共 16 页 2KB）。
+ * 从 16KB 扩到 32KB 的原因：要装 W25Q 驱动 + HAL SPI（约 3.5K），
+ * 再加上 CRC 校验、参数区、传输协议，16KB 装不下。
+ * 这个值必须和 flash_app.h 的 BOOT_SIZE 一致，否则 App 的入口地址对不上。 */
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 64K
-FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 16K
+FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 32K
 }
 
 /* Highest address of the user mode stack */

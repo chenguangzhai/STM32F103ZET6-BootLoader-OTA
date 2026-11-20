@@ -33,7 +33,7 @@
 #define OTA_ERR_WRITE       (-3)	/* 写入失败（多半是这一页没擦干净） */
 
 /* 设定写入起点，同时把内部状态清零。
- * start_addr 必须是页首地址（2KB 的整数倍），例：APP_ADDR = 0x08004000。
+ * start_addr 必须是页首地址（2KB 的整数倍），例：APP_ADDR = 0x08008000。
  * 重复调用等于"从头再来"，之前攒了没写的数据会被丢掉。 */
 void Ota_Init(uint32_t start_addr);
 

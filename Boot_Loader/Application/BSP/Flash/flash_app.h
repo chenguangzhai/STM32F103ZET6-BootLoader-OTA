@@ -9,8 +9,8 @@
  *      所以擦的时候要给页首地址（2KB 的整数倍），给中间地址会擦错页。
  *   3) 写是按「半字」= 2 字节。地址必须偶数。
  *
- * 能写哪：只有 0x08004000 ~ 0x0807FFFF（App 区）。
- * 千万别擦 0x08000000 开头那 16KB，那是 bootloader 自己，擦掉就再也起不来了。
+ * 能写哪：只有 0x08008000 ~ 0x0807FFFF（App 区）。
+ * 千万别擦 0x08000000 开头那 32KB，那是 bootloader 自己，擦掉就再也起不来了。
  */
 #ifndef __FLASH_APP_H
 #define __FLASH_APP_H
@@ -18,13 +18,16 @@
 #include <stdint.h>
 
 /* ==================== 分区 ====================
- *   0x08000000 ~ 0x08003FFF   bootloader   16KB（8 页）
- *   0x08004000 ~ 0x0807FFFF   App          496KB（248 页）
+ *   0x08000000 ~ 0x08007FFF   bootloader   32KB（16 页）
+ *   0x08008000 ~ 0x0807FFFF   App          480KB（240 页）
+ *
+ * 分区只在下面两个宏里定义，其他地方一律用 APP_ADDR / FLASH_END，
+ * 不要另写 0x08008000 这类常数 —— 以后分区再变，改这里就够了。
  */
 #define FLASH_PAGE_BYTES    0x800U                      /* 一页 2KB */
 #define BOOT_ADDR           0x08000000U
-#define BOOT_SIZE           0x4000U                     /* 给 boot 留 16KB */
-#define APP_ADDR            (BOOT_ADDR + BOOT_SIZE)     /* 0x08004000，第 8 页开头 */
+#define BOOT_SIZE           0x8000U                     /* 给 boot 留 32KB */
+#define APP_ADDR            (BOOT_ADDR + BOOT_SIZE)     /* 0x08008000，第 16 页开头 */
 #define FLASH_END           0x08080000U                 /* 512KB 的末尾 */
 
 /* ==================== 返回值 ==================== */
@@ -34,8 +37,8 @@
 #define FLASH_ERR_WRITE     (-3)    /* 写入失败（最常见原因：这段没擦干净） */
 
 /* 擦除 addr 所在的这一页。addr 必须是页首地址（2KB 对齐）。
- * 例：Flash_ErasePage(0x08004000);      擦第 8 页
- *     Flash_ErasePage(0x08004800);      擦第 9 页 */
+ * 例：Flash_ErasePage(0x08008000);      擦第 16 页
+ *     Flash_ErasePage(0x08008800);      擦第 17 页 */
 int8_t Flash_ErasePage(uint32_t addr);
 
 /* 从 addr 开始连写 len 个字节。写完不校验。
