@@ -26,6 +26,17 @@ build/
 Thumbs.db
 .DS_Store
 desktop.ini
+~$*                    # Office 打开时生成的锁文件（如 ~$xxx.xlsx）
+
+# ---- 串口助手：Python / PyInstaller ----
+__pycache__/
+*.pyc
+# dist 里的 exe 有 10 MB，走 GitHub Release 分发，不进版本库
+Tools/SerialAssist/dist/
+# PyInstaller 工作目录（中间产物，可重新生成）
+Tools/SerialAssist/build/
+# 本机配置：串口号、窗口位置，换台机器就没意义
+Tools/SerialAssist/assist_config.json
 
 # ---- 日志 / 临时 ----
 *.log
