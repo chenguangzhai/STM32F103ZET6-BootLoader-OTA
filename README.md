@@ -110,7 +110,7 @@ Application/              App 工程（0x08008000 起，480 KB 分区）
 Tools/SerialAssist/       上位机（独立于固件构建）
   serial_assist.py        tkinter GUI 串口助手
   ota_headless.py         无界面发送端，可进 CI
-  dist/                   PyInstaller 打包的 exe（不入库，走 Release）
+  dist/                   PyInstaller 打包的 exe（不入库，发布在 Release v1.0.0）
 
 CHANGELOG.md              逐次改动记录：动机、实现要点、上板验证、踩过的坑
 ```
@@ -154,7 +154,18 @@ App 侧 `eide.yml` 的 `uploadConfigMap.OpenOCD.baseAddr` 也必须是 `0x080080
 
 ### 3. 升级固件
 
-**方式一：GUI 串口助手**
+**方式一：GUI 串口助手（Windows）**
+
+不想装 Python 可以直接下载打包好的 exe：
+
+- [STM32_OTA_SerialAssist.exe（v1.0.0，10 MB）](https://github.com/chenguangzhai/STM32F103ZET6-BootLoader-OTA/releases/download/v1.0.0/STM32_OTA_SerialAssist.exe)
+- [Release 页面（含 SHA-256 与完整说明）](https://github.com/chenguangzhai/STM32F103ZET6-BootLoader-OTA/releases/tag/v1.0.0)
+
+> exe 未做代码签名，SmartScreen 首次运行会提示「未知发布者」，确认来源后选
+> 「更多信息 → 仍要运行」。要使用 SWD 复位需装好 OpenOCD 和调试器驱动。
+> 本机串口配置不随包发布，首次运行会重新生成 `assist_config.json`。
+
+要改代码就跑源码版：
 
 ```bash
 python Tools/SerialAssist/serial_assist.py

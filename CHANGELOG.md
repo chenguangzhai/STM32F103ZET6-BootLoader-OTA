@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-11-20 18:08 — 串口助手发布到 GitHub Release v1.0.0
+
+### 问题
+
+用户想让串口助手出现在 GitHub「软件包」栏。核对官方文档后确认：
+GitHub Packages 仅支持 npm / RubyGems / Maven / Gradle / NuGet / Docker(OCI)，
+**没有裸 exe 上传入口，也没有 PyPI 注册表**。把 11 MB 的 Windows GUI 程序
+伪装成 NuGet 包只会让使用者多一步解包，因此改用 Release 附件分发
+（`.gitignore` 原本的注释「走 GitHub Release 分发」就是这个意思）。
+
+### 改动
+
+- GitHub Release `v1.0.0` — 新建，附件 `STM32_OTA_SerialAssist.exe`
+  （10,492,589 B，SHA-256 `b3f5994e…0ff4f`）。发布说明含功能清单、
+  SmartScreen 提示说明、CLI 用法、3 秒窗口注意事项与文件校验值。
+  `assist_config.json`（本机串口号/窗口位置）**未**随包发布。
+- `README.md::快速开始/方式一` — 新增 exe 直链和 Release 页面链接，
+  注明未签名程序的 SmartScreen 处理方式、SWD 复位依赖、配置不随包发布。
+- `README.md::目录结构` — `dist/` 注释由「走 Release」改为「发布在 Release v1.0.0」。
+
+### 副作用 / 注意事项
+
+- Release 标签 `v1.0.0` 指向提交 `226af10`；后续 exe 重打包需新建更高版本标签，
+  不要覆盖已发布附件（别人可能已经下载过旧校验值）。
+- exe 未做代码签名，Windows 首次运行会拦；若日后签名，需同步更新 Release 说明。
+- 版本 1.0.0 只对应当前固件协议（FWUP + boot-ota），协议头版本变动时要升上位机版本。
+
+---
+
 ## 2026-11-20 18:05 — 仓库公开发布 + 补根目录 README
 
 ### 问题
