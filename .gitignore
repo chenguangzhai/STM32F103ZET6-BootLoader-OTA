@@ -26,7 +26,11 @@ build/
 Thumbs.db
 .DS_Store
 desktop.ini
-~$*                    # Office 打开时生成的锁文件（如 ~$xxx.xlsx）
+# Office 打开时生成的锁文件（如 ~$xxx.xlsx）
+~$*
+
+# ---- 第三方参考资料（含厂商原理图，不入库、不再分发） ----
+参考/
 
 # ---- 串口助手：Python / PyInstaller ----
 __pycache__/
