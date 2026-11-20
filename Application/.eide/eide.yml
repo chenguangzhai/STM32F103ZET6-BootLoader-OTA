@@ -75,7 +75,7 @@ targets:
         proType: 1
         speed: 8000
       OpenOCD:
-        baseAddr: "0x08004000"
+        baseAddr: "0x08008000"
         bin: ""
         interface: cmsis-dap
         target: stm32f1x

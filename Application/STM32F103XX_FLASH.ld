@@ -54,22 +54,22 @@ ENTRY(Reset_Handler)
 
 /* Specify the memory areas */
 /* ======================== OTA 分区 ========================
- *  0x08000000 ~ 0x08003FFF   BootLoader  16KB = 8 页
- *  0x08004000 ~ 0x0807FFFF   Application 496KB
+ *  0x08000000 ~ 0x08007FFF   BootLoader  32KB = 16 页
+ *  0x08008000 ~ 0x0807FFFF   Application 480KB
  *
  * F103xE 是大容量型号，擦除单位 2KB/页，所以起始地址必须 2KB 对齐。
- * 0x08004000 = 第 8 页，BootLoader 的 LENGTH 也已被封成 16K，
+ * 0x08008000 = 第 16 页，BootLoader 的 LENGTH 也已被封成 32K，
  * 两头都封住，谁长胖了链接阶段就会报 overflow，不会悄悄压到对面。
  *
  * 改这个地址时三处必须一起改，否则「能跑但一进中断就飞」：
  *   1) 本文件 FLASH ORIGIN
  *   2) main.c 里的 APP_ADDR / SCB->VTOR
- *   3) BootLoader 跳转用的 APP_ADDR
+ *   3) BootLoader 的 flash_app.h 里 BOOT_SIZE（APP_ADDR 由它算出来）
  * ========================================================= */
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 64K
-FLASH (rx)      : ORIGIN = 0x08004000, LENGTH = 512K - 16K
+FLASH (rx)      : ORIGIN = 0x08008000, LENGTH = 512K - 32K
 }
 
 /* Highest address of the user mode stack */

@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "dma.h"
+#include "spi.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -26,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include "board.h"
 #include "uart_app.h"
+#include "w25q.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,8 +40,9 @@
 
 /* App 镜像在 Flash 里的起始地址，必须和 STM32F103XX_FLASH.ld 的 FLASH ORIGIN
    一字不差。BootLoader 跳过来时也是往这个地址取初始 SP 和复位向量。
-   F103xE 页大小 2KB，所以这个值必须 2KB 对齐（0x08004000 = 第 8 页）。 */
-#define APP_ADDR    0x08004000U
+   BootLoader 占 32KB，所以 App 从 0x08008000 开始。
+   F103xE 页大小 2KB，所以这个值必须 2KB 对齐（0x08008000 = 第 16 页）。 */
+#define APP_ADDR    0x08008000U
 
 /* USER CODE END PD */
 
@@ -62,7 +65,52 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* W25Q128 自检：读 ID → 擦扇区 0 → 写 16 字节 → 读回打印。
+ *
+ * 只擦地址 0 这一个 4KB 扇区，不影响其他区域。
+ * 但如果你板上这颗 W25Q 里存了别的东西（出厂参数、字库等），
+ * 就把下面的 0x000000 换成你确认空白的地址，比如 0x00F00000。
+ *
+ * 验通之后把 USER CODE BEGIN 2 里那行调用删掉即可。 */
+static void W25q_SelfTest(void)
+{
+	static uint8_t wbuf[16];
+	static uint8_t rbuf[16];
+	uint32_t id;
+	uint8_t  i;
 
+	/* 片选 PB12。SPI2 本身（Mode 0 / 8bit / 9MHz）已在 MX_SPI2_Init() 里配好 */
+	W25q_Init(&hspi2, GPIOB, GPIO_PIN_12);
+
+	id = W25q_ReadId();
+	Uart_Printf(UART_LOG, "[w25q] id=0x%06lX %s\r\n", (unsigned long)id,
+				(id == W25Q_JEDEC_ID) ? "OK" : "FAIL, expect 0xEF4018");
+
+	if(id != W25Q_JEDEC_ID)
+	{
+		/* 读不到 ID 说明片选或接线有问题，后面擦写必然失败，不浪费时间 */
+		return;
+	}
+
+	for(i = 0U; i < 16U; i++)
+	{
+		wbuf[i] = (uint8_t)(0xA0U + i);
+	}
+
+	Uart_Printf(UART_LOG, "[w25q] erase sector 0 ... %s\r\n",
+				(W25q_EraseSector(0U) == W25Q_OK) ? "ok" : "FAIL");
+
+	Uart_Printf(UART_LOG, "[w25q] write 16B ... %s\r\n",
+				(W25q_Write(0U, wbuf, 16U) == W25Q_OK) ? "ok" : "FAIL");
+
+	(void)W25q_Read(0U, rbuf, 16U);
+	Uart_Printf(UART_LOG, "[w25q] read back: ");
+	for(i = 0U; i < 16U; i++)
+	{
+		Uart_Printf(UART_LOG, "%02X ", rbuf[i]);
+	}
+	Uart_Printf(UART_LOG, "\r\n");
+}
 /* USER CODE END 0 */
 
 /**
@@ -103,10 +151,12 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_USART1_UART_Init();
+  MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
   Uart_Init();
-  Led_Fan(1);
   Uart_Printf(UART_LOG, "Hello, world!\r\n");
+
+  W25q_SelfTest();			/* W25Q128 通不通，看这一行打印 */
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -116,6 +166,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    Led_Fan(1);
+    HAL_Delay(500);
+    Led_Fan(0);
+    HAL_Delay(500);
   }
   /* USER CODE END 3 */
 }

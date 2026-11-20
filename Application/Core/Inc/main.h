@@ -59,6 +59,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define LED_Pin GPIO_PIN_5
 #define LED_GPIO_Port GPIOE
+#define W25Q128_CS_Pin GPIO_PIN_12
+#define W25Q128_CS_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
