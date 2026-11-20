@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-11-20 18:18 — 拆分 LICENSE 与第三方声明
+
+### 问题
+
+把第三方声明附在 `LICENSE` 原文末尾后，GitHub 的许可证自动识别匹配失败，
+仓库主页显示 `Other / NOASSERTION`，MIT 标识出不来。
+
+### 改动
+
+- `LICENSE` — 恢复为**纯 MIT 原文**，不留任何附加段落，保证自动识别。
+- `THIRD_PARTY_NOTICES.md` — **新增**，承接原先附在 LICENSE 末尾的第三方
+  授权对照表（CMSIS 核心 Apache-2.0 / HAL 与 Device 包 BSD-3-Clause）与分发注意事项。
+- `README.md::许可证` — 第三方声明链接改指向新文件。
+
+### 副作用 / 注意事项
+
+- 授权信息现在分两处：自研看 `LICENSE`，厂商代码看 `THIRD_PARTY_NOTICES.md`
+  和各目录内的 `LICENSE.txt`。重新分发时三者都要保留。
+- 以后不要在 `LICENSE` 里追加任何说明文字，否则 MIT 标识会再次失效。
+
+---
+
 ## 2026-11-20 18:15 — 采用 MIT 许可证，更正第三方授权说明
 
 ### 问题

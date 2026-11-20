@@ -316,7 +316,7 @@ python ota_headless.py watch --port COM25
 | `Drivers/CMSIS/Device/ST/STM32F1xx/` | BSD-3-Clause（ST） |
 | `Drivers/STM32F1xx_HAL_Driver/` | BSD-3-Clause（ST） |
 
-各自的 `LICENSE.txt` 随目录提供，第三方声明也附在仓库 [LICENSE](LICENSE) 末尾。
+各自的 `LICENSE.txt` 随目录提供，完整说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 重新分发这些目录时请保留对应授权文件。
 
 ## 相关文档
