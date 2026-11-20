@@ -23,13 +23,28 @@
 #include <stdint.h>
 #include "flash_app.h"
 
-/* ==================== 布局 ==================== */
+/* ==================== 布局 ====================
+ *
+ * 参数页做双备份：App 区最后两页，A 在低地址。
+ *
+ * 为什么必须两页：写参数页的过程是「擦 2KB 页 → 写 28 字节」，那段擦除
+ * 要 20~40ms。而升级恰恰是最容易断电的时刻（用户看进度条卡住就去拔电源）。
+ * 单页时这一下掉电，参数页就变成「有内容但 CRC 不对」—— 自愈故意不碰这种
+ * 状态（不猜），于是 Boot 停在 OTA 等串口，现场没串口就是一块砖。
+ *
+ * 双页轮转后，每次只写「当前没在用的那一页」，写完整页回读校验才认；
+ * 任何时刻至少有一页是完整的。掉电最坏结果是丢一次状态更新，不会丢账本。
+ * 附带好处：单页 1 万次的擦写寿命变成两页轮流各 1 万次。
+ */
+#define OTA_PARAM_ADDR_A    (FLASH_END - (2U * FLASH_PAGE_BYTES))   /* 0x0807F000 */
+#define OTA_PARAM_ADDR_B    (FLASH_END - (1U * FLASH_PAGE_BYTES))   /* 0x0807F800 */
 
-/* 参数页：App 区最后一页，避开固件本体 */
-#define OTA_PARAM_ADDR      (FLASH_END - FLASH_PAGE_BYTES)
+/* 老代码仍用这个名字，指向 A 页（也是新记录的默认落点） */
+#define OTA_PARAM_ADDR      OTA_PARAM_ADDR_A
 
-/* App 固件能占用的最大字节数（到参数页为止） */
-#define OTA_APP_MAX         (OTA_PARAM_ADDR - APP_ADDR)
+/* App 固件能占用的最大字节数（到参数页 A 为止）。
+   比双备份之前少了一页 2KB，对 18KB 的固件没有实际影响 */
+#define OTA_APP_MAX         (OTA_PARAM_ADDR_A - APP_ADDR)
 
 /* 参数页的识别码，写成 'OTAP' 的小端形式。全 0xFF 的空片不会命中 */
 #define OTA_PARAM_MAGIC     0x4F544150U
@@ -54,15 +69,19 @@
 #define OTA_PARM_BAD        2       /* 参数页有内容但校验不过：写坏了或被擦了一半 */
 #define OTA_PARM_ERR        (-1)    /* 底层 Flash 操作失败 */
 
-/* 参数页内容。sizeof = 24 字节，一页 2KB 只用开头这一点 */
+/* 参数页内容。sizeof = 28 字节，一页 2KB 只用开头这一点。
+ *
+ * 布局前后不能改：前 24 字节和老版本一模一样，只在 self_crc 前面插了 seq。
+ * 老记录（无 seq）由 Ota_Param_Load 按老格式单独识别，见 .c 里的说明。 */
 typedef struct
 {
 	uint32_t magic;         /* OTA_PARAM_MAGIC */
 	uint32_t length;        /* App 固件的有效字节数 */
 	uint32_t crc32;         /* App 区 [APP_ADDR, APP_ADDR+length) 的 CRC32 */
-	uint32_t version;       /* 留作版本号，暂时写 0 */
-	uint32_t reserved;      /* 对齐用 */
-	uint32_t self_crc;      /* 上面 20 字节的 CRC32，防止参数页自己写坏 */
+	uint32_t version;       /* 固件版本号，降级拦截靠它比较 */
+	uint32_t reserved;      /* bit0..3 状态，bit8..15 试用计数 */
+	uint32_t seq;           /* 递增序号：两页比大小，谁大谁新 */
+	uint32_t self_crc;      /* 上面 24 字节的 CRC32，防止参数页自己写坏 */
 } OtaParam_t;
 
 /* 尾部记录解析结果 */
@@ -72,6 +91,36 @@ typedef struct
 	uint32_t crc32;
 } OtaTail_t;
 
+/* ==================== 试用状态（阶段 4） ====================
+ *
+ * 存在 OtaParam_t.reserved 里，不改结构体大小 —— 这样老参数页不用重刷，
+ * self_crc 也照样覆盖得到（它算的是前 20 字节，reserved 在其中）。
+ *
+ *   bit0..3   状态
+ *   bit8..15  已经试着启动过几次
+ *   其余位    全 1（Flash 擦完就是 1，少写几个 0 等于少几次电位翻转）
+ *
+ * 兼容性：老固件写参数时 reserved = 0xFFFFFFFF，状态读出来是 0xF，
+ * 按"已确认"处理。否则升级后第一次上电会把老固件当成"试用中"，
+ * 而老固件根本不会去确认，三次之后就误回滚。
+ */
+#define OTA_PARM_STATE_MASK      0x0000000FUL
+#define OTA_PARM_CNT_MASK        0x0000FF00UL
+#define OTA_PARM_CNT_SHIFT       8U
+
+#define OTA_PARM_STATE_CONFIRMED 0x0U    /* 这一版跑起来过，App 亲自确认了 */
+#define OTA_PARM_STATE_TRIAL     0x1U    /* 刚装上，还在试用期 */
+#define OTA_PARM_STATE_LEGACY    0xFU    /* 老参数（reserved=0xFFFFFFFF），按已确认对待 */
+
+/* 试用上限：到这个次数还没被确认就回滚。
+   3 次能容忍 1~2 次上电抖动（插拔电源、按复位），又不至于让坏固件
+   在场上跑太多轮才暴露 */
+#define OTA_PARM_TRIAL_MAX       3U
+
+/* 从 reserved 里取状态/计数 */
+uint8_t Ota_Param_State(uint32_t reserved);
+uint8_t Ota_Param_TrialCnt(uint32_t reserved);
+
 /* 读参数页。
  * 返回 OTA_PARM_OK / OTA_PARM_EMPTY / OTA_PARM_BAD。 */
 int8_t Ota_Param_Load(OtaParam_t *p);
@@ -79,6 +128,17 @@ int8_t Ota_Param_Load(OtaParam_t *p);
 /* 写参数页（内部先擦整页再写）。
  * 调用前请确认 length 不超过 OTA_APP_MAX。 */
 int8_t Ota_Param_Save(uint32_t length, uint32_t crc, uint32_t version);
+
+/* 写参数页，同时指定试用状态与已试次数。
+ * 新固件搬进来之后要用这个（state=TRIAL, cnt=0）——
+ * 用上面的 Ota_Param_Save 会把状态写成"已确认"，试用期就被跳过了。 */
+int8_t Ota_Param_SaveEx(uint32_t length, uint32_t crc, uint32_t version,
+                        uint8_t state, uint8_t cnt);
+
+/* 只改试用状态，长度/CRC/版本原样保留（读-改-写）。
+ * 试用计数递增、确认转正都走这里，免得每次都要把 len/crc 再传一遍、
+ * 也避免调用方传错长度把参数页写坏。 */
+int8_t Ota_Param_SetState(uint8_t state, uint8_t cnt);
 
 /* 擦掉参数页，让下一次上电退回"没有参数"的状态。 */
 int8_t Ota_Param_Erase(void);

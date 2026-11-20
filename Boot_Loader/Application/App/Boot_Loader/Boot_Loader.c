@@ -1,5 +1,6 @@
 #include "Boot_Loader.h"
 #include "usart.h"			/* huart1，以及 main.h → stm32f1xx_hal.h 里的 SysTick / NVIC / SCB */
+#include "spi.h"			/* hspi2：阶段 3 起 Boot 会用 SPI2 读 W25Q 搬固件 */
 
 /* ==================== App 有效性判据 ====================
  * 固件的头两个 32 位字是链接器写死的，不执行代码就能读：
@@ -95,6 +96,13 @@ void Boot_Loader_JumpToApp(uint32_t app_addr)
 	/* 4) 停掉串口 DMA 接收。HAL_UART_AbortReceive 会顺带 Abort 掉
 	      huart1 的接收 DMA，DMA 停了才不会继续往 s_port 的缓冲里灌数据 */
 	HAL_UART_AbortReceive(&huart1);
+
+	/* 4b) 停掉 SPI2。阶段 3 起 Boot 自己会用 SPI2 读 W25Q，
+	      所以跳转前它一定是"使能且刚用完"的状态。不 DeInit 就跳，
+	      App 里重新 MX_SPI2_Init() 相当于在一个活着的 SPI 上改配置，
+	      最坏情况第一次读 W25Q 的 ID 就是错的（看起来像"驱动坏了"）。
+	      DeInit 会关 SPE 并复位 CR1/CR2，App 从干净的寄存器重新配置 */
+	HAL_SPI_DeInit(&hspi2);
 
 	/* 5) 提前把 VTOR 指过去。App 的 main 里还会再设一次，
 	      但那要执行到 main 才行 —— 在这之前如果来了异常，

@@ -94,13 +94,13 @@ int8_t Ota_Feed(const uint8_t *buf, uint32_t len)
 				   同时把错误锁死 —— 否则下一包数据又会来擦这一页，
 				   失败一次擦一次，10k 次寿命很快就耗光了。 */
 				s_err = r;
-				OTA_LOG("[ota] FAIL at 0x%08lX, code %d\r\n",
+				OTA_LOG("[ota] 写入失败 地址=0x%08lX 错误码=%d\r\n",
 						(unsigned long)s_addr, (int)r);
 				return r;
 			}
 
 			s_total += OTA_PAGE_BYTES;
-			OTA_LOG("[ota] page 0x%08lX ok, sum: %lu\r\n",
+			OTA_LOG("[ota] 页 0x%08lX 写入成功，累计 %lu\r\n",
 					(unsigned long)s_addr, (unsigned long)s_total);
 
 			s_addr  += OTA_PAGE_BYTES;
@@ -140,13 +140,13 @@ int8_t Ota_Flush(void)
 	if(r != OTA_OK)
 	{
 		s_err = r;
-		OTA_LOG("[ota] tail FAIL at 0x%08lX %luB, code %d\r\n",
+		OTA_LOG("[ota] 尾部写入失败 地址=0x%08lX %luB 错误码=%d\r\n",
 				(unsigned long)s_addr, (unsigned long)s_fill, (int)r);
 		return r;
 	}
 
 	s_total += s_fill;
-	OTA_LOG("[ota] tail 0x%08lX %luB ok, sum: %lu\r\n",
+	OTA_LOG("[ota] 尾部 0x%08lX %luB 写入成功，累计 %lu\r\n",
 			(unsigned long)s_addr, (unsigned long)s_fill, (unsigned long)s_total);
 
 	s_addr  += OTA_PAGE_BYTES;
