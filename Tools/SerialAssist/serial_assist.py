@@ -287,6 +287,40 @@ def openocd_reset(exe, scr, interface="cmsis-dap", target="stm32f1x",
 
 
 # ==============================================================================
+# 协议打包（GUI 与无界面调试端 ota_headless.py 共用）
+# ==============================================================================
+# 抽成模块级函数，是因为这两个结构的字节定义必须和 C 端逐字节一致：
+#   OtaSlotHeader_t（32 字节，见 ota_slot.h）
+#   老协议尾部（12 字节，'OTAE' + len + crc32）
+# 一旦 GUI 里写一份、调试脚本里再写一份，两边漂移的症状是"发送说成功、
+# 板子报 crc mismatch"，而且不报任何错 —— 这类坑排查成本极高。
+
+OTA_HDR_MAGIC = 0x50555746      # 'F','W','U','P' 小端形式 = OTA_SLOT_HDR_MAGIC
+OTA_HDR_VER = 1                 # 必须等于 C 端 OTA_SLOT_HDR_VER
+OTA_TAIL_MAGIC = b"OTAE"
+
+
+def build_fwup_header(fw_ver, fw_len, fw_crc, build_time=0, flags=0):
+    """构造 32 字节槽头。
+
+    布局（必须和 OtaSlotHeader_t 一致）：
+      magic(I) fw_ver(H) hdr_ver(H) fw_len(I) fw_crc(I) build_time(I) flags(I)
+      = 24 字节；hdr_crc(I) 覆盖前 24 字节；reserved(I) 必须为 0
+
+    注意 CRC 覆盖的是 24 而不是 28 —— 28 是 hdr_crc 之后再算 reserved 的偏移，
+    很容易记混。C 端用 offsetof(hdr_crc) 算，这里必须跟着对上。
+    """
+    body = struct.pack("<IHHIIII", OTA_HDR_MAGIC, fw_ver, OTA_HDR_VER,
+                       fw_len, fw_crc, build_time, flags)
+    return body + struct.pack("<II", zlib.crc32(body) & 0xFFFFFFFF, 0)
+
+
+def build_ota_tail(fw_len, fw_crc):
+    """老协议（BootLoader 串口收固件）的 12 字节尾部。"""
+    return struct.pack("<4sII", OTA_TAIL_MAGIC, fw_len, fw_crc)
+
+
+# ==============================================================================
 # 主窗口
 # ==============================================================================
 
@@ -307,6 +341,10 @@ class OtaSerialApp(object):
         self.reader_alive = False
         self.reader_thread = None
         self.rx_queue = queue.Queue()        # (kind, payload) 主线程消费
+
+        # 注：这里曾经有个 rx_epoch 分代号，用来在"清空缓冲"时丢弃
+        # reader 手上正在读的那一块。后来确认需求只是清屏 —— 清屏不该
+        # 影响接收，丢掉的是板子刚发来的数据 —— 所以连同代号一起撤了。
 
         # ---- 发送线程 ----
         self.tx_thread = None
@@ -368,6 +406,12 @@ class OtaSerialApp(object):
         self._init_style()
         self._build_ui()
         self.refresh_ports()
+
+        # Ctrl+L 清空接收区，和终端里清屏的习惯一致。
+        # 绑在 root 上而不是 Text 上：焦点在输入框时也想能按。
+        # 末尾返回 "break" 阻止 Tk 继续往上冒泡（否则某些主题会吃掉按键）。
+        root.bind("<Control-l>",
+                  lambda e: (self.clear_rx(), "break")[1])
 
         # 关闭窗口时先收拾线程，否则 python 会卡在 join
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -622,13 +666,38 @@ class OtaSerialApp(object):
 
         self.auto_reset = tk.BooleanVar(
             value=self.cfg.get("auto_reset", self.ocd_ready))
-        self._chk(c, "发送前调试器复位（抢 OTA 窗口）",
-                  self.auto_reset).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(6, 5))
+        self.chk_reset = self._chk(c, "发送前调试器复位（抢 OTA 窗口）",
+                                   self.auto_reset)
+        self.chk_reset.grid(row=4, column=0, columnspan=2, sticky="w",
+                            pady=(6, 2))
+
+        # 新架构开关：固件不再由 BootLoader 收，而是直接发给正在运行的 App。
+        # App 自己写 W25Q 槽 A、收完写头、然后软复位回 BootLoader 搬运。
+        # 默认关：老工具配老流程仍然可用，切换是显式动作，不做隐式猜测。
+        # 放在"发送前复位"紧下方，因为这两项是互斥的两条发送路径 ——
+        # 勾了新架构就不需要抢 OTA 窗口，所以联动置灰，避免误以为还要复位。
+        self.fwup_mode = tk.BooleanVar(value=self.cfg.get("fwup_mode", False))
+        self.chk_fwup = self._chk(c, "新架构：直接发给 App（FWUP 头，免复位）",
+                                  self.fwup_mode)
+        self.chk_fwup.grid(row=5, column=0, columnspan=2, sticky="w",
+                           pady=(0, 2))
+
+        # 固件版本号：写进 FWUP 头 → App 原样存进槽头 → Boot 搬进参数页。
+        # Boot 拿它和"板子当前版本"比，低于就拒绝搬运 —— 这是拦误刷旧版的唯一手段
+        # （CRC 不行：同一份源码重编一次，__TIME__ 变了 CRC 就变，分不出新旧）。
+        # 只在新架构下有意义：老协议没有头部，Boot 那边也读不到版本。
+        vf = tk.Frame(c, bg=C_PANEL)
+        vf.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        vf.columnconfigure(0, weight=1)
+        tk.Label(vf, text="固件版本（升序，降级会被拒绝）", bg=C_PANEL, fg=C_SUB,
+                 font=(FONT_UI, 8)).grid(row=0, column=0, sticky="w")
+        self.fw_ver_var = tk.StringVar(value=str(self.cfg.get("fw_ver", "1")))
+        ttk.Spinbox(vf, textvariable=self.fw_ver_var, from_=1, to=65535,
+                    width=7, font=(FONT_MONO, 9)).grid(row=0, column=1, sticky="e")
 
         # 发送 / 中止
         bf = tk.Frame(c, bg=C_PANEL)
-        bf.grid(row=5, column=0, columnspan=2, sticky="ew")
+        bf.grid(row=7, column=0, columnspan=2, sticky="ew")
         bf.columnconfigure(0, weight=2)
         bf.columnconfigure(1, weight=1)
 
@@ -645,13 +714,13 @@ class OtaSerialApp(object):
         self.var_tx = tk.StringVar(value="")
         tk.Label(c, textvariable=self.var_tx, bg=C_PANEL, fg=C_SUB,
                  font=(FONT_MONO, 8), anchor="w").grid(
-            row=6, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+            row=8, column=0, columnspan=2, sticky="ew", pady=(5, 0))
 
         # 复位：DAP-Link 的串口 DTR 不接 NRST，必须走 SWD。
         # width 单位是字符，必须限死，否则 ttk 按钮按文字撑出 147px 最小宽度、
         # 把卡片顶宽，右对齐的控件会被画到窗口外且 winfo 量不出来。
         rf = tk.Frame(c, bg=C_PANEL)
-        rf.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        rf.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         rf.columnconfigure(0, weight=2)
         rf.columnconfigure(1, weight=1)
 
@@ -676,7 +745,23 @@ class OtaSerialApp(object):
         tk.Label(c, textvariable=self.ocd_hint, bg=C_PANEL,
                  fg=C_OK if self.ocd_ready else C_BAD,
                  font=(FONT_UI, 7), anchor="w").grid(
-            row=8, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+            row=10, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+
+        # 两条路径互斥：新架构下"发送前复位"没意义（App 本来就活着），
+        # 置灰比留着一个勾更容易让人看懂当前走哪条。取消勾选后恢复可用。
+        self.fwup_mode.trace_add("write", lambda *_: self._sync_send_mode())
+        self._sync_send_mode()
+
+    def _sync_send_mode(self):
+        """勾了「新架构」就把「发送前复位」置灰，反之恢复。
+
+        只是让界面说真话：新架构的发送函数根本不读 auto_reset，
+        留着可勾选框会让人以为复位还在起作用。
+        """
+        if self.fwup_mode.get():
+            self.chk_reset.configure(state="disabled")
+        else:
+            self.chk_reset.configure(state="normal")
 
     # ---- 底部：发送区 ----
     def _build_sendbar(self):
@@ -729,6 +814,8 @@ class OtaSerialApp(object):
         tk.Label(bar, textvariable=self.var_count, bg="#E9EDF2", fg=C_SUB,
                  font=(FONT_MONO, 8)).pack(side="right", padx=12)
 
+        # 文案回到"清空接收"：它清的是接收区这一屏字，
+        # 串口缓冲、待渲染队列、解析状态全都原样保留，名字得说清楚
         tk.Button(bar, text="清空接收", relief="flat", bg="#E9EDF2", fg=C_SUB,
                   font=(FONT_UI, 8), bd=0, activebackground="#DCE2E9",
                   cursor="hand2", command=self.clear_rx).pack(side="right", padx=4)
@@ -987,6 +1074,23 @@ class OtaSerialApp(object):
         self._sys_line("--- 显示模式: {} ---".format(self.disp_mode.get()))
 
     def clear_rx(self):
+        """清空接收区显示 —— 只动界面，不碰串口一个字节
+
+        做的事只有三件：清 Text 内容、丢掉 HEX 模式下攒着不满 16 字节的
+        尾巴、偏移归零。
+
+        明确不清的东西（这是刻意留着的）：
+          · 驱动层 in_waiting —— 板子刚发来、驱动已收到但还没读的字节
+          · rx_queue —— 已读到、还没渲染的块
+          · line_buf —— 跨块的半行，OTA 面板靠它拼整行
+          · 增量解码器 —— 可能存着半个多字节字符
+          · rx_count / tx_count —— 累计收发统计
+        这些都属于"数据"，清屏不该把它们扔掉。所以清完之后只要板子还在
+        发，屏幕会接着往下滚 —— 这是对的，清屏不等于停收。
+
+        副作用：HEX 模式下偏移从 00000000 重新起算。不归零的话清屏后
+        第一行会接着上一屏的地址，看起来像丢了一段，反而更迷惑。
+        """
         self.rx.configure(state="normal")
         self.rx.delete("1.0", "end")
         self.rx.configure(state="disabled")
@@ -1335,17 +1439,122 @@ class OtaSerialApp(object):
         chunk = int(self.chunk_var.get())
         delay = float(self.delay_var.get())
 
-        self._sys_line("--- 开始发送 {} （{} B，块 {}，延时 {}ms）---".format(
-            os.path.basename(path), self.fw_size, chunk, delay))
+        self._sys_line("--- 开始发送 {} （{} B，块 {}，延时 {}ms）{} ---".format(
+            os.path.basename(path), self.fw_size, chunk, delay,
+            " · 新架构 FWUP" if self.fwup_mode.get() else ""))
 
-        self.tx_thread = threading.Thread(
-            target=self._tx_worker, args=(path, chunk, delay), daemon=True)
+        # 版本号只在主线程读一次再传进线程：Tk 变量不属于线程安全对象，
+        # 发送线程里现读现用，偶尔会拿到空串或半截值
+        if self.fwup_mode.get():
+            self.tx_thread = threading.Thread(
+                target=self._tx_worker_fwup,
+                args=(path, chunk, delay, self._read_fw_ver()),
+                daemon=True)
+        else:
+            self.tx_thread = threading.Thread(
+                target=self._tx_worker, args=(path, chunk, delay), daemon=True)
         self.tx_thread.start()
+
+    def _read_fw_ver(self):
+        """取版本号输入框的值。非法就回落 1 并明说，不静默改用户的输入。"""
+        raw = str(self.fw_ver_var.get()).strip()
+        try:
+            v = int(raw)
+        except Exception:
+            v = 0
+        if not (1 <= v <= 65535):
+            self._sys_line("--- 版本号「{}」不合法，本次按 1 发送 ---".format(raw))
+            return 1
+        return v
 
     def abort_file_send(self):
         if self.tx_thread and self.tx_thread.is_alive():
             self.abort_evt.set()
             self._sys_line("--- 用户中止发送 ---")
+
+    def _tx_worker_fwup(self, path, chunk, delay_ms, fw_ver):
+        """新架构：把「32 字节槽头 + 固件」直接发给正在运行的 App。
+
+        和老 _tx_worker 的四处本质区别：
+          1. 不做 SWD 复位 —— 目标是 App。复位会把 App 踢回 BootLoader，
+             接收状态机还没建立就被打断了
+          2. 头部先发 —— App 靠 'FWUP' 认出"这是固件"，业务数据不会误触发
+          3. 不发 OTAE 尾部 —— 长度和 CRC 已经在头部里。再发 12 字节只会被
+             App 当成固件数据，反而让 CRC 永远对不上
+          4. 发完不复位 —— App 写完头会自己 NVIC_SystemReset()。
+             外部复位若抢在前面，可能打断"写头"这一步，留下半成品
+        """
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except Exception as e:
+            self.rx_queue.put(("error", "读取文件失败: {}".format(e)))
+            return
+
+        total = len(data)
+        if total <= 0:
+            self.rx_queue.put(("error", "固件是空文件"))
+            return
+
+        crc = zlib.crc32(data) & 0xFFFFFFFF
+        # 版本号由界面传入（_read_fw_ver 已做范围兜底）。它一路原样走到
+        # 槽头 fw_ver → Boot 搬运时写进参数页 version，降级拦截就靠它比较
+
+        # 头部字节定义统一走 build_fwup_header，别在这里另写一份 pack
+        hdr = build_fwup_header(fw_ver, total, crc)
+
+        try:
+            self.ser.write(hdr)
+        except Exception as e:
+            self.rx_queue.put(("error", "发送头部失败: {}".format(e)))
+            return
+
+        self.rx_queue.put(("sys",
+            "--- FWUP 头已发：ver={} len={:,} crc=0x{:08X} ---".format(
+                fw_ver, total, crc)))
+
+        # 等 App 把「头部扇区」擦掉再开始发数据。
+        # 为什么必须等：App 收到 32 字节头后要先擦掉旧头所在的 4KB 扇区
+        # （W25Q 典型 45ms），这期间它不能取串口数据。115200 下 45ms 会进来
+        # 约 520 字节，而 App 的 DMA 环形缓冲只有 1024 字节 —— 头部一擦完
+        # 紧接着还要擦第一个数据扇区，两段阻塞叠起来正好逼近溢出边界。
+        # 这里先静一下，让缓冲从空开始，后面的"边收边擦"就宽松了。
+        time.sleep(0.3)
+
+        sent = 0
+        t0 = time.time()
+        last_ui = 0.0
+
+        try:
+            while sent < total:
+                if self.abort_evt.is_set():
+                    # App 那边会静默 3 秒后自行放弃，不需要再补什么命令
+                    self.rx_queue.put(("sys",
+                        "--- 已中止，App 会在 3 秒静默后放弃本次接收 ---"))
+                    self.rx_queue.put(("tx", (sent, total, 0.0, True, True)))
+                    return
+
+                block = data[sent:sent + chunk]
+                self.ser.write(block)
+                sent += len(block)
+
+                now = time.time()
+                if now - last_ui > 0.08 or sent >= total:
+                    self.rx_queue.put(("tx", (sent, total,
+                                              sent / max(now - t0, 1e-6), False)))
+                    last_ui = now
+
+                if delay_ms > 0:
+                    time.sleep(delay_ms / 1000.0)
+        except Exception as e:
+            self.rx_queue.put(("error", "发送中断: {}".format(e)))
+            self.rx_queue.put(("tx", (sent, total, 0.0, True, True)))
+            return
+
+        self.rx_queue.put(("tx", (sent, total,
+                                  sent / max(time.time() - t0, 1e-6), True)))
+        self.rx_queue.put(("sys",
+            "--- 发送完毕 {:,} B，等 App 校验并自复位（盯日志里的 [app-ota]）---".format(sent)))
 
     def _tx_worker(self, path, chunk, delay_ms):
         """后台线程：读文件 → 分块写串口。所有 UI 更新一律走队列。"""
@@ -1416,7 +1625,7 @@ class OtaSerialApp(object):
             # 尾部这 12 字节才更可能单独成块，不会被拆到两个读周期里
             time.sleep(0.05)
             try:
-                self.ser.write(struct.pack("<4sII", b"OTAE", total, crc32))
+                self.ser.write(build_ota_tail(total, crc32))
             except Exception as e:
                 self.rx_queue.put(("error", "尾部记录发送失败: {}".format(e)))
                 return
@@ -1500,7 +1709,11 @@ class OtaSerialApp(object):
             self._set_state("已中止", C_WARN)
             self._sys_line("--- 发送已中止（{} B）---".format(sent))
         elif sent >= total:
-            self._set_state("发送完毕，等待 BootLoader 回报…", C_ACCENT)
+            # 两种架构等的东西不一样：老流程等 BootLoader 回报 sum/verify，
+            # 新流程等 App 打完 [app-ota] 并自己复位回 BootLoader
+            self._set_state("发送完毕，等待 App 校验自复位…"
+                            if self.fwup_mode.get()
+                            else "发送完毕，等待 BootLoader 回报…", C_ACCENT)
             self._sys_line("--- 发送完毕 {} B，用时 {:.2f}s ---".format(
                 sent, total / max(speed, 1e-6) if speed else 0))
         else:
@@ -1522,6 +1735,8 @@ class OtaSerialApp(object):
             "chunk": self.chunk_var.get(),
             "delay": self.delay_var.get(),
             "auto_reset": self.auto_reset.get(),
+            "fwup_mode": self.fwup_mode.get(),
+            "fw_ver": self.fw_ver_var.get(),
             "last_file": self.fw_path.get(),
             "geometry": self.root.geometry(),
         })
