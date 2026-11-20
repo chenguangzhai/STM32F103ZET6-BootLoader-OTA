@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-11-20 18:15 — 采用 MIT 许可证，更正第三方授权说明
+
+### 问题
+
+仓库此前无 LICENSE，自研部分默认「保留所有权利」，使用者无法合法使用。
+另外 README 原写「`Drivers/` 下为 ST 的 BSD-3-Clause」是**错的**：逐个核对
+`LICENSE.txt` 后发现是混合授权——CMSIS 核心为 Apache-2.0（ARM），
+STM32 HAL 与 CMSIS Device 包才是 BSD-3-Clause（ST）。
+
+### 改动
+
+- `LICENSE` — **新增**。MIT License，署名 `Copyright (c) 2026 chenguangzhai`
+  （取自 git 提交身份与 GitHub 账号）。文末附第三方组件声明，
+  逐目录列出 CMSIS 核心 Apache-2.0 / HAL 与 Device 包 BSD-3-Clause，
+  明确这些目录**不受 MIT 覆盖**。
+- `README.md::已知限制` — 删除「未附许可证」条目（问题已解决）。
+- `README.md::许可证` — **新增**章节，说明 MIT 覆盖范围、第三方授权对照表，
+  以及重新分发时必须保留各自的 `LICENSE.txt`。
+
+### 副作用 / 注意事项
+
+- MIT 不授予专利使用权；需要专利条款应改用 Apache-2.0。
+- 无法替 ST / ARM 重新授权其代码，第三方声明只是划清边界，不是转授权。
+- 旧 README 中关于「Drivers 全为 BSD-3-Clause」的描述已作废；
+  若其他地方引用过该说法需一并更正。
+- 根目录 LICENSE 可被 GitHub 自动识别，仓库主页会显示 MIT 标识。
+
+---
+
 ## 2026-11-20 18:08 — 串口助手发布到 GitHub Release v1.0.0
 
 ### 问题

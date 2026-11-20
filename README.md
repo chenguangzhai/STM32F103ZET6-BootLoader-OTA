@@ -302,7 +302,22 @@ python ota_headless.py watch --port COM25
 - **无固件签名**：目前只校验完整性，不校验来源。要做签名验证需同时开启
   F103 的读保护，否则密钥可从芯片读出。
 - **槽 B 只保留一版**：没有历史版本管理，连续升级两次后无法回到更早的版本。
-- **未附许可证**：仓库暂未声明 License（`Drivers/` 下为 ST 的 BSD-3-Clause 授权）。
+
+## 许可证
+
+自研部分（BootLoader、App 逻辑、上位机）采用 [MIT License](LICENSE)：
+可商用、可修改、可闭源分发，只需保留版权与许可声明。
+
+`Drivers/` 下的厂商代码不适用 MIT：
+
+| 目录 | 授权 |
+|---|---|
+| `Drivers/CMSIS/`（核心） | Apache-2.0（ARM） |
+| `Drivers/CMSIS/Device/ST/STM32F1xx/` | BSD-3-Clause（ST） |
+| `Drivers/STM32F1xx_HAL_Driver/` | BSD-3-Clause（ST） |
+
+各自的 `LICENSE.txt` 随目录提供，第三方声明也附在仓库 [LICENSE](LICENSE) 末尾。
+重新分发这些目录时请保留对应授权文件。
 
 ## 相关文档
 
