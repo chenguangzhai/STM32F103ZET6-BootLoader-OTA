@@ -81,7 +81,11 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
 
     GPIO_InitStruct.Pin = GPIO_PIN_10;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    /* 上拉替代 NOPULL：DAPLink 拔掉后 PA10 悬空会拾取噪声，
+       App 侧的 OTA 常驻监听同样会被 1~2 字节噪声误触发（表现为乱进 OTA）。
+       UART 空闲电平本来就是高，上拉符合协议，且与调试器驱动不冲突。
+       副作用：CubeMX 重新生成会覆盖这段代码，故 .ioc 里 PA10 也同步设了 GPIO_PULLUP。 */
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     /* USART1 DMA Init */

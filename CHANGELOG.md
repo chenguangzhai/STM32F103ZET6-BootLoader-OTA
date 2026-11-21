@@ -4,6 +4,68 @@
 
 ---
 
+## 2026-11-21 20:38 — 将 TrialGuard 移入 CubeMX 保护区，修复重新生成后被删除
+
+### 问题
+
+用户用 CubeMX 重新生成代码后编译报错
+`implicit declaration of function 'TrialGuard'`。根因不是缺头文件，而是
+`TrialGuard()` 的函数定义原本写在 `main.c` 的 `/* USER CODE END 0 */` 与
+`int main(void)` 之间——这一段不在 CubeMX 的 `USER CODE BEGIN/END` 保护区内，
+每次生成都会被模板重写。同工程其它自定义函数（ResetCause_Snapshot、
+Bkp_JumpUnacked、CheckAppBoot、HandleRx 等）都在保护区内，故只有它丢失。
+仅从 HEAD 恢复函数只是治标，下次生成仍会再次被删。
+
+### 改动
+
+- `Boot_Loader/Core/Src/main.c` — 把 `TrialGuard()` 整段（注释 + 函数体，约 116 行）
+  从 `USER CODE END 0` 之后移到 `USER CODE BEGIN 0` / `USER CODE END 0` 保护区内部
+  （现位于第 399 行，`main` 之前）。逻辑未改，只调整位置：
+  其调用的 `Bkp_JumpUnacked`（231 行）、`ResetCause_Name`（167 行）均在前方定义，
+  调用点（`main` 内）在其后，无需新增前置声明。
+
+### 副作用 / 注意事项
+
+- 无逻辑副作用；仅调整函数位置，`arm-none-eabi-gcc -fsyntax-only` 校验通过。
+- 经验规则：main.c 中一切手写函数都必须放在 `USER CODE BEGIN 0` / `END 0` 之间，
+  否则 CubeMX 重新生成时必被清除。App 工程同类函数已核对均在保护区内。
+
+---
+
+## 2026-11-21 20:30 — USART1_RX(PA10) 加内部上拉，修复浮空噪声误入 OTA
+
+### 问题
+
+用户反馈：DAPLink 不上电时程序跑不到 App 区。根因是 PA10 配成
+`GPIO_MODE_INPUT + GPIO_NOPULL`（浮空输入），DAPLink 一旦断电，RX 线两端都没人驱动，
+浮空引脚拾取电磁噪声被 UART 当成起始位，收到 1~2 个随机字节。
+Boot 的 3 秒 OTA 窗口里 `Uart_Read() > 0` 就判定 `ota_mode = 1`，
+于是一直停在 bootloader 等串口，永远不跳 App。
+DAPLink 上电时其 CDC 的 TX 驱动 PA10 到确定空闲高电平，故无此问题。
+证据：main.c 里早有注释提到"上电就被噪声触发进 OTA，字节数 1~2 可判断是噪声"，
+黑匣子 `进入OTA` 事件的 arg 字段记的正是这个字节数。
+
+### 改动
+
+- `Boot_Loader/Core/Src/usart.c::HAL_UART_MspInit` — PA10 的 `GPIO_NOPULL` 改为
+  `GPIO_PULLUP`，加注释说明原因与副作用。UART 空闲本来就是高电平，上拉符合协议，
+  且与调试器 TX 驱动不冲突（内部上拉很弱）。
+- `Application/Core/Src/usart.c::HAL_UART_MspInit` — 同上。App 侧 OTA 常驻监听同样
+  会被零星噪声误触发，一并修复。
+- `Boot_Loader/Boot_Loader.ioc` — PA10 补 `GPIOParameters=GPIO_PuPd` /
+  `GPIO_PuPd=GPIO_PULLUP`，防止 CubeMX 重新生成代码时覆盖。
+- `Application/Application.ioc` — 同上。
+
+### 副作用 / 注意事项
+
+- 两工程都要重新编译烧录才生效；只改 Boot 的话 App 侧噪声问题仍在。
+- 上拉只是把线"默认拉高"，不屏蔽上位机正常驱动；DAPLink / USB-TTL 的 TX 是强驱动，
+  能轻松覆盖弱上拉，升级通信不受影响。
+- 若现场干扰极强、内部上拉（约 30~50kΩ）不足以压住，仍需外部 4.7kΩ 上拉到 3.3V。
+- CubeMX 重新生成后请确认 `usart.c` 里仍是 `GPIO_PULLUP`（.ioc 已设，正常会自动带上）。
+
+---
+
 ## 2026-11-20 18:18 — 拆分 LICENSE 与第三方声明
 
 ### 问题

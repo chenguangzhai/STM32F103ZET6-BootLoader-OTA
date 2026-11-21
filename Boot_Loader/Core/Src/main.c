@@ -387,8 +387,6 @@ static uint8_t HandleRx(const uint8_t *buf, uint32_t len)
 	return 0U;
 }
 
-/* USER CODE END 0 */
-
 /**
   * 函    数：TrialGuard
   * 功    能：试用计数 / 确认核对 / 超限回滚（阶段 4）
@@ -507,6 +505,7 @@ static uint8_t TrialGuard(void)
 	return 0U;
 }
 
+/* USER CODE END 0 */
 
 /**
   * @brief  The application entry point.
